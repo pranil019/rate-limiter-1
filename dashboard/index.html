@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Rate Limiter — Live Node Activity</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --border: #232838;
+    --text: #d7dce5;
+    --dim: #6b7280;
+    --allow: #3ecf8e;
+    --deny: #e5484d;
+    --degraded: #e5a54d;
+    --mono: "IBM Plex Mono", "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    padding: 32px;
+  }
+  h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin: 0 0 4px 0;
+  }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 24px; }
+  .status { display: flex; gap: 8px; align-items: center; margin-bottom: 24px; font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .dot.connected { background: var(--allow); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .stat {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+  }
+  .stat .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat .value { font-size: 28px; margin-top: 6px; }
+  .value.allow { color: var(--allow); }
+  .value.deny { color: var(--deny); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+  tr:last-child td { border-bottom: none; }
+  .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge.allow { background: rgba(62,207,142,0.12); color: var(--allow); }
+  .badge.deny { background: rgba(229,72,77,0.12); color: var(--deny); }
+  .badge.degraded { background: rgba(229,165,77,0.12); color: var(--degraded); margin-left: 6px; }
+  .node { color: var(--dim); }
+
+  .peer-panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin-top: 24px;
+  }
+  .peer-panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--dim); margin: 0 0 4px 0; font-weight: 600;
+  }
+  .peer-panel .hint { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
+  .peer-controls { display: flex; gap: 8px; margin-bottom: 12px; }
+  .peer-controls button {
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+    font-family: var(--mono); font-size: 12px; padding: 6px 12px; border-radius: 4px; cursor: pointer;
+  }
+  .peer-controls button:hover { border-color: var(--allow); }
+  .peer-status { font-size: 12px; margin-bottom: 12px; }
+  .peer-status.open { color: var(--allow); }
+  .peer-status.closed { color: var(--dim); }
+  .peer-notes { max-height: 140px; overflow-y: auto; font-size: 13px; margin-bottom: 10px; }
+  .peer-notes div { padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .peer-notes .me { color: var(--allow); }
+  .peer-notes .them { color: var(--text); }
+  .peer-input { display: flex; gap: 8px; }
+  .peer-input input {
+    flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--mono); font-size: 13px; padding: 6px 10px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+  <h1>Distributed Rate Limiter</h1>
+  <div class="sub">Live event stream over WebSocket — each row is a decision broadcast by a limiter node</div>
+
+  <div class="status">
+    <div class="dot" id="dot"></div>
+    <span id="statusText">connecting…</span>
+  </div>
+
+  <div class="grid">
+    <div class="stat"><div class="label">Total decisions</div><div class="value" id="total">0</div></div>
+    <div class="stat"><div class="label">Allowed</div><div class="value allow" id="allowed">0</div></div>
+    <div class="stat"><div class="label">Denied</div><div class="value deny" id="denied">0</div></div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Node</th><th>Key</th><th>Decision</th><th>Remaining</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <div class="peer-panel">
+    <h2>Peer Notes (WebRTC)</h2>
+    <div class="hint">
+      Open this same page in a second browser window/tab. Once connected, notes
+      travel directly between the two browsers over an RTCDataChannel — this
+      server only relayed the initial handshake, not the notes themselves.
+    </div>
+    <div class="peer-controls">
+      <button id="btnOffer">Connect (Peer A)</button>
+      <button id="btnWaiting">Waiting for peer\u2026 (Peer B, just open this page)</button>
+    </div>
+    <div class="peer-status closed" id="peerStatus">peer: not connected</div>
+    <div class="peer-notes" id="peerNotes"></div>
+    <div class="peer-input">
+      <input id="peerInput" placeholder="Type a note and press Enter\u2026" disabled />
+    </div>
+  </div>
+
+  <script>
+    // Point this at any limiter node's /stream endpoint. In a real
+    // multi-node deployment, connecting to ONE node is enough — nodes
+    // gossip decisions to each other over Redis pub/sub, so every node's
+    // dashboard feed reflects the whole cluster.
+    const WS_URL = "ws://localhost:4001/stream";
+
+    const dot = document.getElementById("dot");
+    const statusText = document.getElementById("statusText");
+    const rows = document.getElementById("rows");
+    const totalEl = document.getElementById("total");
+    const allowedEl = document.getElementById("allowed");
+    const deniedEl = document.getElementById("denied");
+
+    let total = 0, allowed = 0, denied = 0;
+    let signalingSocket = null; // the same WebSocket doubles as the WebRTC signaling channel
+
+    function connect() {
+      const ws = new WebSocket(WS_URL);
+      signalingSocket = ws;
+
+      ws.onopen = () => {
+        dot.classList.add("connected");
+        statusText.textContent = "connected — " + WS_URL;
+      };
+
+      ws.onclose = () => {
+        dot.classList.remove("connected");
+        statusText.textContent = "disconnected, retrying…";
+        setTimeout(connect, 2000);
+      };
+
+      ws.onmessage = (msg) => {
+        const event = JSON.parse(msg.data);
+
+        if (event.type === "webrtc-signal") {
+          handleSignal(event.payload);
+          return;
+        }
+        if (event.type !== "decision") return;
+
+        total += 1;
+        if (event.allowed) allowed += 1; else denied += 1;
+        totalEl.textContent = total;
+        allowedEl.textContent = allowed;
+        deniedEl.textContent = denied;
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${new Date(event.ts).toLocaleTimeString()}</td>
+          <td class="node">${event.node}</td>
+          <td>${event.key}</td>
+          <td>
+            <span class="badge ${event.allowed ? "allow" : "deny"}">${event.allowed ? "ALLOW" : "DENY"}</span>
+            ${event.degraded ? '<span class="badge degraded">DEGRADED</span>' : ""}
+          </td>
+          <td>${event.remaining == null ? "n/a" : Math.floor(event.remaining)}</td>
+        `;
+        rows.prepend(tr);
+        while (rows.children.length > 50) rows.removeChild(rows.lastChild);
+      };
+    }
+
+    connect();
+
+    // ============================================================
+    // WebRTC: direct peer-to-peer data channel between two browsers.
+    // The limiter node's WebSocket (signalingSocket) is used ONLY to
+    // exchange the handshake (SDP offer/answer + ICE candidates).
+    // Once "peer: connected" shows below, notes go straight browser-to-
+    // browser — the server is no longer involved in that traffic.
+    // ============================================================
+    const btnOffer = document.getElementById("btnOffer");
+    const btnWaiting = document.getElementById("btnWaiting");
+    const peerStatus = document.getElementById("peerStatus");
+    const peerNotes = document.getElementById("peerNotes");
+    const peerInput = document.getElementById("peerInput");
+
+    btnWaiting.disabled = true; // it's just an instructional label, not clickable
+
+    let pc = null;
+    let dataChannel = null;
+
+    function sendSignal(payload) {
+      if (signalingSocket && signalingSocket.readyState === WebSocket.OPEN) {
+        signalingSocket.send(JSON.stringify({ type: "webrtc-signal", payload }));
+      }
+    }
+
+    function setupPeerConnection() {
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) sendSignal({ kind: "ice-candidate", candidate: e.candidate });
+      };
+
+      pc.ondatachannel = (e) => {
+        wireDataChannel(e.channel);
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "connected") {
+          peerStatus.textContent = "peer: connected (direct P2P data channel)";
+          peerStatus.className = "peer-status open";
+        } else if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
+          peerStatus.textContent = "peer: not connected";
+          peerStatus.className = "peer-status closed";
+          peerInput.disabled = true;
+        }
+      };
+    }
+
+    function wireDataChannel(channel) {
+      dataChannel = channel;
+      dataChannel.onopen = () => { peerInput.disabled = false; };
+      dataChannel.onmessage = (e) => addNote(e.data, "them");
+    }
+
+    function addNote(text, who) {
+      const div = document.createElement("div");
+      div.className = who;
+      div.textContent = (who === "me" ? "you: " : "peer: ") + text;
+      peerNotes.appendChild(div);
+      peerNotes.scrollTop = peerNotes.scrollHeight;
+    }
+
+    async function handleSignal(payload) {
+      if (!pc) setupPeerConnection(); // Peer B: an offer arrived before we clicked anything
+
+      if (payload.kind === "offer") {
+        await pc.setRemoteDescription(payload.sdp);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendSignal({ kind: "answer", sdp: answer });
+      } else if (payload.kind === "answer") {
+        await pc.setRemoteDescription(payload.sdp);
+      } else if (payload.kind === "ice-candidate") {
+        try { await pc.addIceCandidate(payload.candidate); } catch (_) {}
+      }
+    }
+
+    btnOffer.onclick = async () => {
+      setupPeerConnection();
+      dataChannel = pc.createDataChannel("notes");
+      wireDataChannel(dataChannel);
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal({ kind: "offer", sdp: offer });
+
+      peerStatus.textContent = "peer: offer sent, waiting for the other window…";
+    };
+
+    peerInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && peerInput.value.trim() && dataChannel && dataChannel.readyState === "open") {
+        dataChannel.send(peerInput.value.trim());
+        addNote(peerInput.value.trim(), "me");
+        peerInput.value = "";
+      }
+    });
+  </script>
+</body>
+</html>
